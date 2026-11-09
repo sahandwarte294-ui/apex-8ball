@@ -1,0 +1,61 @@
+# 把这个文件放到仓库里：.github/workflows/build-apexboard.yml
+# 仓库根目录下要有 apex-engine-2.0/ 这一层文件夹
+# push 之后在 Actions 页面点 Run workflow，跑完在 Artifacts 里下载 ApexBoard-dylib.zip
+name: Build ApexBoard dylib
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Theos + iOS SDK
+        run: |
+          set -euo pipefail
+          brew install ldid xz || true
+          export THEOS="$HOME/theos"
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS"
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          SDKVER="$(xcrun --sdk iphoneos --show-sdk-version)"
+          mkdir -p "$THEOS/sdks"
+          ln -sfn "$SDK" "$THEOS/sdks/iPhoneOS${SDKVER}.sdk"
+          echo "SDK: $SDK ($SDKVER)"
+          ls -l "$THEOS/sdks"
+
+      - name: Build (arm64 + arm64e, fallback arm64)
+        run: |
+          set -euo pipefail
+          export THEOS="$HOME/theos"
+          export PATH="$THEOS/bin:$PATH"
+          export LDID="$(command -v ldid || echo "$THEOS/bin/ldid")"
+          cd apex-engine-2.0
+          make clean >/dev/null 2>&1 || true
+          if ! make -j3 package DEBUG=0 FINALPACKAGE=1; then
+            echo "::warning::arm64+arm64e build failed, retrying with arm64 only"
+            make clean >/dev/null 2>&1 || true
+            make -j3 package ARCHS=arm64 DEBUG=0 FINALPACKAGE=1
+          fi
+
+      - name: Show artefacts
+        run: |
+          set -euo pipefail
+          ls -l apex-engine-2.0/packages || true
+          for f in apex-engine-2.0/.theos/obj/*/ApexBoard.dylib; do
+            [ -e "$f" ] || continue
+            echo "== $f"
+            file "$f"
+          done
+
+      - name: Upload artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ApexBoard-dylib
+          if-no-files-found: warn
+          path: |
+            apex-engine-2.0/.theos/obj/*/ApexBoard.dylib
+            apex-engine-2.0/packages/*.deb
